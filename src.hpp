@@ -77,55 +77,93 @@ public:
             return Vec(0, 0);
         }
 
-        // Desired velocity towards target with proportional slowdown near target.
-        double desired_speed = v_max;
-        // Smooth approach: limit speed so we don't overshoot in one interval by too much
-        double max_step_speed = dist / TIME_INTERVAL; // to arrive in one step
-        desired_speed = std::min(desired_speed, max_step_speed);
-        // Also keep some margin
-        desired_speed = std::max(0.0, desired_speed);
-        Vec v_des = to_tar.normalize() * desired_speed;
-
-        // Basic right-of-way: lower ID robots have priority. If our proposed velocity would
-        // collide with any lower-ID robot, try to adjust.
         int n = monitor->get_robot_number();
 
-        // Try several fallback strategies: slow, stop, sidestep.
-        auto safe_with = [&](const Vec &v_try) -> bool {
+        // Desired velocity towards target with proportional slowdown near target.
+        double desired_speed = std::min(v_max, dist / TIME_INTERVAL);
+        desired_speed = std::max(0.0, desired_speed);
+        Vec dir = to_tar.normalize();
+        Vec v_des = dir * desired_speed;
+
+        // Compute repulsion from nearby robots (potential field)
+        Vec repel(0, 0);
+        for (int j = 0; j < n; ++j) {
+            if (j == id) continue;
+            Vec pj = monitor->get_pos_cur(j);
+            double rj = monitor->get_r(j);
+            Vec dp = pos_cur - pj;
+            double d = dp.norm();
+            double safe = r + rj;
+            double infl = safe * 3.0; // influence radius
+            if (d < 1e-6) {
+                // overlapping or nearly same pos: push strongly along perpendicular to break symmetry
+                Vec p(dir.y, -dir.x);
+                repel += p * (v_max * 0.8);
+                continue;
+            }
+            if (d < infl) {
+                double k = 0.6; // repulsion strength
+                double strength;
+                if (d <= safe) {
+                    strength = v_max; // strong push when too close
+                } else {
+                    strength = k * (1.0 / (d - safe + 1e-6) - 1.0 / (infl - safe + 1e-6));
+                    strength = std::max(0.0, std::min(strength, v_max));
+                }
+                repel += dp.normalize() * strength;
+            }
+        }
+
+        Vec v_try = clamp_len(v_des + repel, v_max);
+
+        auto safe_with = [&](const Vec &vtest) -> bool {
             for (int j = 0; j < n; ++j) {
                 if (j == id) continue;
-                // Give way to lower IDs, be conservative with higher IDs too
-                if (will_collide(pos_cur, v_try, j)) return false;
+                if (will_collide(pos_cur, vtest, j)) return false;
             }
             return true;
         };
 
-        // First try desired velocity clamped to v_max
-        Vec v_try = clamp_len(v_des, v_max);
+        // React to last-round warnings: if we were involved in collisions, yield or sidestep
+        if (monitor->get_warning()) {
+            auto collided = monitor->get_collision(id);
+            if (!collided.empty() || monitor->get_speeding(id)) {
+                // Try yielding: reduce speed significantly
+                Vec v_yield = clamp_len(v_des, v_max * 0.2);
+                if (safe_with(v_yield)) return v_yield;
+                // Sidestep based on id parity to break symmetry
+                Vec perp(dir.y, -dir.x);
+                double side_speed = std::min(v_max * 0.3, desired_speed * 0.3);
+                Vec options[4] = {perp * side_speed, perp * (-side_speed), (perp * 0.5) * side_speed, (perp * -0.5) * side_speed};
+                for (auto &opt : options) {
+                    if (safe_with(opt)) return opt;
+                }
+                return Vec(0, 0);
+            }
+        }
+
         if (safe_with(v_try)) return v_try;
 
         // Try reducing speed in factors
-        const double factors[] = {0.7, 0.5, 0.3, 0.2, 0.1};
+        const double factors[] = {0.8, 0.6, 0.5, 0.3, 0.2, 0.1};
+        Vec base = clamp_len(v_des, v_max);
         for (double f : factors) {
-            v_try = v_try * f;
-            if (safe_with(v_try)) return v_try;
+            Vec cand = base * f;
+            if (safe_with(cand)) return cand;
         }
 
-        // Try a small sidestep perpendicular to target direction
-        Vec dir = to_tar.normalize();
+        // Try small sidestep perpendicular to target direction
         Vec perp(dir.y, -dir.x);
         double side_speed = std::min(v_max * 0.3, desired_speed * 0.3);
         Vec sidesteps[4] = {perp * side_speed, perp * (-side_speed), (perp * 0.5) * side_speed, (perp * -0.5) * side_speed};
         for (auto &s : sidesteps) {
-            v_try = s;
-            if (safe_with(v_try)) return v_try;
+            if (safe_with(s)) return s;
         }
 
-        // Fallback: full stop
+        // Fallback: stop
         return Vec(0, 0);
     }
 };
 
 
 #endif //PPCA_SRC_HPP
-
