@@ -119,6 +119,11 @@ public:
             if (safe_with(v_try)) return v_try;
         }
 
+        // Try maintaining previous velocity if it remains safe
+        if (safe_with(v_cur)) return clamp_len(v_cur, v_max);
+        Vec v_keep = v_cur * 0.8;
+        if (safe_with(v_keep)) return clamp_len(v_keep, v_max);
+
         // Fallback: full stop
         return Vec(0, 0);
     }
