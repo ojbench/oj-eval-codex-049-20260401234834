@@ -95,6 +95,13 @@ class ACMOJClient:
 
         return result
 
+    def submit_code(self, problem_id: int, code: str, language: str = "cpp") -> Optional[Dict]:
+        data = {"language": language, "code": code}
+        result = self._make_request("POST", f"/problem/{problem_id}/submit", data=data)
+        if result and 'id' in result:
+            self._save_submission_id(result['id'])
+        return result
+
     def get_submission_detail(self, submission_id: int) -> Optional[Dict]:
         return self._make_request("GET", f"/submission/{submission_id}")
 
@@ -114,6 +121,12 @@ def main():
     submit_parser.add_argument("--problem-id", type=int, required=True, help="Problem ID")
     submit_parser.add_argument("--git-url", type=str, required=True, help="Git repository URL")
 
+    # Submit a single file's contents as code
+    submit_file_parser = subparsers.add_parser("submit-file", help="Submit local file as C++ code")
+    submit_file_parser.add_argument("--problem-id", type=int, required=True, help="Problem ID")
+    submit_file_parser.add_argument("--file", type=str, required=True, help="Path to source file (e.g., src.hpp)")
+    submit_file_parser.add_argument("--language", type=str, default="cpp", help="Language tag (default: cpp)")
+
     # Sub-command for checking submission status
     status_parser = subparsers.add_parser("status", help="Check submission status")
     status_parser.add_argument("--submission-id", type=int, required=True, help="Submission ID")
@@ -132,6 +145,14 @@ def main():
 
     if args.command == "submit":
         result = client.submit_git(args.problem_id, args.git_url)
+    elif args.command == "submit-file":
+        try:
+            with open(args.file, 'r', encoding='utf-8') as f:
+                code = f.read()
+        except Exception as e:
+            print(f"Failed to read file {args.file}: {e}")
+            return
+        result = client.submit_code(args.problem_id, code, args.language)
     elif args.command == "status":
         result = client.get_submission_detail(args.submission_id)
     elif args.command == "abort":
